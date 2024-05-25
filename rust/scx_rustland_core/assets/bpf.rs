@@ -171,10 +171,6 @@ struct AlignedBuffer([u8; BUFSIZE]);
 
 static mut BUF: AlignedBuffer = AlignedBuffer([0; BUFSIZE]);
 
-// Special negative error code for libbpf to stop after consuming just one item from a BPF
-// ring buffer.
-const LIBBPF_STOP: i32 = -255;
-
 impl<'cb> BpfScheduler<'cb> {
     pub fn init(
         slice_us: u64,
@@ -216,18 +212,7 @@ impl<'cb> BpfScheduler<'cb> {
                 BUF.0.copy_from_slice(data);
             }
 
-            // Return an unsupported error to stop early and consume only one item.
-            //
-            // NOTE: this is quite a hack. I wish libbpf would honor stopping after the first item
-            // is consumed, upon returning a non-zero positive value here, but it doesn't seem to
-            // be the case:
-            //
-            // https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/tools/lib/bpf/ringbuf.c?h=v6.8-rc5#n260
-            //
-            // Maybe we should fix this to stop processing items from the ring buffer also when a
-            // value > 0 is returned.
-            //
-            LIBBPF_STOP
+            return 0;
         }
 
         // Initialize online CPUs counter.
@@ -373,16 +358,16 @@ impl<'cb> BpfScheduler<'cb> {
     //
     // NOTE: if task.cpu is negative the task is exiting and it does not require to be scheduled.
     pub fn dequeue_task(&mut self) -> Result<Option<QueuedTask>, i32> {
-        match self.queued.consume_raw() {
+        match self.queued.consume_n_raw(1) {
             0 => Ok(None),
-            LIBBPF_STOP => {
+            1 => {
                 // A valid task is received, convert data to a proper task struct.
                 let task = unsafe { EnqueuedMessage::from_bytes(&BUF.0).to_queued_task() };
                 Ok(Some(task))
             }
             res if res < 0 => Err(res),
             res => panic!(
-                "Unexpected return value from libbpf-rs::consume_raw(): {}",
+                "Unexpected return value from libbpf-rs::consume_n_raw(): {}",
                 res
             ),
         }
